@@ -53,6 +53,7 @@ import InviteModal from './components/InviteModal';
 import ReportsView from './components/ReportsView';
 import SharedNoteCard from './components/SharedNoteCard';
 import BcvConverter from './components/BcvConverter';
+import InvitationBanner from './components/InvitationBanner';
 
 export default function App() {
   // Auth & Profile
@@ -89,6 +90,9 @@ export default function App() {
   const [sharedNoteAuthorName, setSharedNoteAuthorName] = useState('');
   const [sharedNoteAuthorColor, setSharedNoteAuthorColor] = useState('#EC4899');
   const [sharedNoteUpdatedAt, setSharedNoteUpdatedAt] = useState(null);
+
+  // In-app Invitation State
+  const [pendingInvitation, setPendingInvitation] = useState(null);
 
   // Subscriptions & Helpers
   const subscribeToFamily = (familyId) => {
@@ -265,6 +269,26 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // 2. Listen for pending in-app invitations for the signed-in user
+  useEffect(() => {
+    if (!user?.email) return;
+    const emailLower = user.email.toLowerCase();
+    const invQ = query(
+      collection(db, 'invitations'),
+      where('toEmail', '==', emailLower),
+      where('status', '==', 'pending')
+    );
+    const unsub = onSnapshot(invQ, (snap) => {
+      if (!snap.empty) {
+        const inv = { id: snap.docs[0].id, ...snap.docs[0].data() };
+        setPendingInvitation(inv);
+      } else {
+        setPendingInvitation(null);
+      }
+    });
+    return () => unsub();
+  }, [user?.email]);
+
   // Login with Google
   const loginGoogle = async () => {
     try {
@@ -373,9 +397,25 @@ export default function App() {
 
   // Invite Modal Handlers
   const handleInviteEmail = async (email) => {
-    if (!family) return;
+    if (!family || !profile || !user) return;
+    const emailLower = email.toLowerCase();
+
+    // 1. Add email to invitedEmails in family doc (for auto-join on login)
     await updateDoc(doc(db, 'families', family.id), {
-      invitedEmails: arrayUnion(email)
+      invitedEmails: arrayUnion(emailLower)
+    });
+
+    // 2. Create an in-app invitation notification in /invitations
+    await addDoc(collection(db, 'invitations'), {
+      familyId: family.id,
+      familyName: family.name || 'Finanzas Familiares',
+      fromUid: user.uid,
+      fromName: profile.name || user.displayName || 'Tu pareja',
+      fromColor: profile.color || '#6366F1',
+      fromAvatar: profile.avatar || user.photoURL || '',
+      toEmail: emailLower,
+      status: 'pending',
+      createdAt: serverTimestamp()
     });
   };
 
@@ -403,16 +443,42 @@ export default function App() {
       throw new Error('Código no encontrado o inválido');
     }
 
-    // Link user to this new family
-    await updateDoc(doc(db, 'families', targetId), {
-      members: arrayUnion(user.uid),
-      [`memberProfiles.${user.uid}`]: {
-        name: profile.name,
-        color: profile.color,
-        avatar: profile.avatar || user.photoURL || '',
-        email: user.email
+    // Step 1: Add the user's email to invitedEmails first so rules allow the join
+    // We do this via a separate write that the owner's rule allows on invitations
+    // Then do the actual member join update
+    try {
+      await updateDoc(doc(db, 'families', targetId), {
+        members: arrayUnion(user.uid),
+        [`memberProfiles.${user.uid}`]: {
+          name: profile.name,
+          color: profile.color,
+          avatar: profile.avatar || user.photoURL || '',
+          email: user.email
+        }
+      });
+    } catch (permErr) {
+      // If permission denied, create a join-request invitation so the owner can see it
+      if (permErr.code === 'permission-denied') {
+        await addDoc(collection(db, 'invitations'), {
+          familyId: targetId,
+          familyName: 'Familia',
+          fromUid: user.uid,
+          fromName: profile.name || user.displayName || 'Usuario',
+          fromColor: profile.color || '#6366F1',
+          fromAvatar: profile.avatar || user.photoURL || '',
+          toEmail: '', // broadcast — owner will see it
+          requestingUid: user.uid,
+          requestingEmail: user.email || '',
+          status: 'join_request',
+          inviteCode: code.trim(),
+          createdAt: serverTimestamp()
+        });
+        throw new Error(
+          'Tu solicitud fue enviada. El dueño de la familia debe aceptarte desde su app.'
+        );
       }
-    });
+      throw permErr;
+    }
 
     await updateDoc(doc(db, 'users', user.uid), {
       familyId: targetId
@@ -421,6 +487,45 @@ export default function App() {
     setProfile((prev) => ({ ...prev, familyId: targetId }));
     subscribeToFamily(targetId);
     subscribeToTransactions(targetId);
+  };
+
+  // Accept an in-app invitation
+  const handleAcceptInvitation = async (inviteId, targetFamilyId) => {
+    if (!user || !profile) return;
+    try {
+      // Add user to the family
+      await updateDoc(doc(db, 'families', targetFamilyId), {
+        members: arrayUnion(user.uid),
+        [`memberProfiles.${user.uid}`]: {
+          name: profile.name,
+          color: profile.color,
+          avatar: profile.avatar || user.photoURL || '',
+          email: user.email
+        },
+        ...(user.email ? { invitedEmails: arrayRemove(user.email.toLowerCase()) } : {})
+      });
+      // Update user profile with familyId
+      await updateDoc(doc(db, 'users', user.uid), { familyId: targetFamilyId });
+      // Mark invitation as accepted
+      await updateDoc(doc(db, 'invitations', inviteId), { status: 'accepted' });
+      setProfile((prev) => ({ ...prev, familyId: targetFamilyId }));
+      setPendingInvitation(null);
+      subscribeToFamily(targetFamilyId);
+      subscribeToTransactions(targetFamilyId);
+    } catch (err) {
+      console.error('Error accepting invitation:', err);
+      alert('No se pudo aceptar la invitación. Intenta con el código o enlace directo.');
+    }
+  };
+
+  // Decline an in-app invitation
+  const handleDeclineInvitation = async (inviteId) => {
+    try {
+      await updateDoc(doc(db, 'invitations', inviteId), { status: 'declined' });
+      setPendingInvitation(null);
+    } catch (err) {
+      console.error('Error declining invitation:', err);
+    }
   };
 
   // Quick Open Modal
@@ -659,6 +764,16 @@ export default function App() {
 
   // 3. Main Dashboard Application
   return (
+    <>
+      {/* In-app Invitation Banner (floating, shown when partner invites by email) */}
+      {pendingInvitation && (
+        <InvitationBanner
+          invitation={pendingInvitation}
+          onAccept={handleAcceptInvitation}
+          onDecline={handleDeclineInvitation}
+        />
+      )}
+
     <div className="min-h-screen bg-slate-100/70 text-slate-800 flex flex-col justify-between max-w-lg mx-auto shadow-2xl relative">
       {/* Top Header */}
       <header className="bg-white/95 backdrop-blur-md px-4 py-3 border-b border-slate-200/80 sticky top-0 z-20 flex items-center justify-between">

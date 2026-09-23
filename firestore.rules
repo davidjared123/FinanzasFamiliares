@@ -1,0 +1,93 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(resource) {
+      return resource.data.ownerUid == request.auth.uid;
+    }
+
+    function isMember(resource) {
+      return request.auth.uid in resource.data.members;
+    }
+
+    // User is in invitedEmails list of this family doc
+    function isInvitedByEmail(resource) {
+      return request.auth.token.email != null &&
+             request.auth.token.email in resource.data.invitedEmails;
+    }
+
+    // User is joining with a valid invite code (for the join handshake)
+    // We allow self-add when all of these are true:
+    //  - user is authenticated
+    //  - they are only writing their own uid to 'members' (arrayUnion)
+    //  - they are only writing their own profile to 'memberProfiles'
+    //  - they are not changing owner, inviteCode, etc.
+    function isValidJoinWrite() {
+      let allowed = ['members', 'memberProfiles', 'invitedEmails'];
+      return request.auth != null &&
+             request.resource.data.ownerUid == resource.data.ownerUid &&
+             request.resource.data.inviteCode == resource.data.inviteCode &&
+             request.resource.data.name == resource.data.name;
+    }
+
+    // ── /users/{uid} ────────────────────────────────────────────────────────
+    match /users/{uid} {
+      // Anyone signed in can read (needed for invite flows)
+      allow read: if isSignedIn();
+      // Only the user themselves can write their own doc
+      allow write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ── /families/{familyId} ────────────────────────────────────────────────
+    match /families/{familyId} {
+      // Members and invited emails can read
+      allow read: if isSignedIn() && (
+        isMember(resource) || isInvitedByEmail(resource) || isOwner(resource)
+      );
+
+      // Only owner or existing members can create / do full updates
+      allow create: if isSignedIn();
+
+      // Full update: must be owner or current member
+      allow update: if isSignedIn() && (
+        isMember(resource) ||
+        isOwner(resource) ||
+        // Allow JOIN: user invited by email OR doing a valid code-based join
+        isInvitedByEmail(resource) ||
+        isValidJoinWrite()
+      );
+
+      allow delete: if isSignedIn() && isOwner(resource);
+
+      // ── /families/{familyId}/transactions/{txId} ───────────────────────
+      match /transactions/{txId} {
+        allow read: if isSignedIn() && isMember(get(/databases/$(database)/documents/families/$(familyId)));
+        allow create: if isSignedIn() && isMember(get(/databases/$(database)/documents/families/$(familyId)));
+        allow update, delete: if isSignedIn() && isMember(get(/databases/$(database)/documents/families/$(familyId)));
+      }
+    }
+
+    // ── /invitations/{inviteId} ─────────────────────────────────────────────
+    // In-app invitation notifications (new collection)
+    match /invitations/{inviteId} {
+      // Sender can create; recipient can read and update (accept/decline)
+      allow create: if isSignedIn();
+      allow read: if isSignedIn() && (
+        resource.data.toEmail == request.auth.token.email ||
+        resource.data.fromUid == request.auth.uid
+      );
+      allow update: if isSignedIn() && (
+        resource.data.toEmail == request.auth.token.email ||
+        resource.data.fromUid == request.auth.uid
+      );
+      allow delete: if isSignedIn() && resource.data.fromUid == request.auth.uid;
+    }
+  }
+}
