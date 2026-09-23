@@ -29,13 +29,13 @@ import {
   LogOut,
   Edit2,
   Check,
-  Users,
   Camera,
   ArrowUpRight,
   ArrowDownRight,
   Clock,
   Sparkles,
-  ChevronRight
+  ChevronRight,
+  Smartphone
 } from 'lucide-react';
 
 function generateFamilyCode() {
@@ -690,16 +690,18 @@ export default function App() {
         </div>
 
         {/* Right: Actions */}
-        <div className="flex items-center space-x-1">
+        <div className="flex items-center space-x-2">
           <button
+            type="button"
             onClick={() => setIsInviteModalOpen(true)}
-            className="p-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition flex items-center space-x-1"
-            title="Invitar pareja"
+            className="py-1.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 rounded-xl transition flex items-center space-x-1.5 shadow-2xs active:scale-95 cursor-pointer"
+            title="Invitar a mi pareja"
           >
-            <Users className="w-4 h-4" />
-            <span className="text-[11px] font-bold hidden sm:inline">Invitar</span>
+            <Smartphone className="w-3.5 h-3.5 text-indigo-600" />
+            <span className="text-xs font-bold">Invitar</span>
           </button>
           <button
+            type="button"
             onClick={() => signOut(auth)}
             className="p-2 text-slate-400 hover:text-rose-500 hover:bg-slate-50 rounded-xl transition"
             title="Cerrar sesión"
@@ -762,6 +764,33 @@ export default function App() {
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* Quick Couple Invite Card */}
+            <div className="bg-gradient-to-r from-violet-50 to-indigo-50 border border-indigo-100/90 p-3.5 rounded-2xl flex items-center justify-between shadow-2xs">
+              <div className="flex items-center space-x-3">
+                <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center text-base shadow-xs">
+                  💌
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-indigo-950">
+                    {familyMembers.length > 1 ? 'Finanzas en Pareja' : '¡Invita a tu Pareja!'}
+                  </h4>
+                  <p className="text-[11px] text-indigo-800/80">
+                    {familyMembers.length > 1
+                      ? `${familyMembers.length} personas conectadas en este hogar`
+                      : 'Envía el link por WhatsApp o Email para ver y editar juntos'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsInviteModalOpen(true)}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition active:scale-95 flex items-center space-x-1 shrink-0"
+              >
+                <Smartphone className="w-3.5 h-3.5" />
+                <span>Invitar</span>
+              </button>
             </div>
 
             {/* Quick Action Buttons */}
@@ -1263,8 +1292,15 @@ export default function App() {
       <InviteModal
         isOpen={isInviteModalOpen}
         onClose={() => setIsInviteModalOpen(false)}
-        family={family}
-        members={familyMembers}
+        family={
+          family || {
+            id: profile?.familyId || 'FAM-12345',
+            inviteCode: profile?.familyId || 'FAM-12345',
+            name: `Finanzas ${profile?.name || 'Familiares'}`,
+            invitedEmails: []
+          }
+        }
+        members={familyMembers.length > 0 ? familyMembers : (profile ? [profile] : [])}
         onInviteEmail={handleInviteEmail}
         onRemoveInvitedEmail={handleRemoveInvitedEmail}
         onJoinWithCode={handleJoinWithCode}

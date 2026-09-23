@@ -3,14 +3,46 @@ import {
   X,
   Copy,
   Check,
-  Share2,
   Mail,
   Users,
   ShieldCheck,
   Send,
   Trash2,
-  UserPlus
+  UserPlus,
+  Smartphone,
+  MessageCircle,
+  FileText
 } from 'lucide-react';
+
+// Robust clipboard copy with fallback for all devices and browsers
+async function copyToClipboard(text) {
+  if (navigator?.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      console.warn('navigator.clipboard.writeText failed, trying fallback', e);
+    }
+  }
+
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '-9999px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const successful = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return successful;
+  } catch (err) {
+    console.error('Fallback copy failed', err);
+    return false;
+  }
+}
 
 export default function InviteModal({
   isOpen,
@@ -23,36 +55,96 @@ export default function InviteModal({
 }) {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedFullMessage, setCopiedFullMessage] = useState(false);
   const [emailToInvite, setEmailToInvite] = useState('');
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [inputJoinCode, setInputJoinCode] = useState('');
   const [showJoinOther, setShowJoinOther] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
+  const [shareSuccessFeedback, setShareSuccessFeedback] = useState('');
 
-  if (!isOpen || !family) return null;
+  if (!isOpen) return null;
 
-  const inviteCode = family.inviteCode || family.id || 'FAM-12345';
+  const activeFamily = family || {
+    id: 'FAM-PENDING',
+    name: 'Finanzas Familiares',
+    inviteCode: 'FAM-SYNC',
+    invitedEmails: []
+  };
+
+  const inviteCode = activeFamily.inviteCode || activeFamily.id || 'FAM-12345';
   const shareUrl = `${window.location.origin}${window.location.pathname}?join=${inviteCode}`;
 
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(shareUrl);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2500);
+  const invitationMessage = `¡Hola mi amor! Te invito a compartir nuestras finanzas familiares en tiempo real. Entra con este enlace para unirte: ${shareUrl} o usa el código: ${inviteCode}`;
+
+  // 1. Native Mobile Share Sheet (WhatsApp, Email, SMS, Telegram, etc.)
+  const canNativeShare = typeof navigator !== 'undefined' && !!navigator.share;
+
+  const handleNativeShare = async () => {
+    if (canNativeShare) {
+      try {
+        await navigator.share({
+          title: 'Finanzas Familiares en Pareja',
+          text: invitationMessage,
+          url: shareUrl
+        });
+        setShareSuccessFeedback('¡Enviado con éxito!');
+        setTimeout(() => setShareSuccessFeedback(''), 3000);
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.error('Error with navigator.share:', err);
+          handleShareWhatsApp();
+        }
+      }
+    } else {
+      // Fallback directly to WhatsApp
+      handleShareWhatsApp();
+    }
   };
 
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(inviteCode);
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2500);
-  };
-
+  // 2. Direct WhatsApp
   const handleShareWhatsApp = () => {
-    const text = encodeURIComponent(
-      `¡Hola amor! Te invito a compartir nuestras finanzas familiares en tiempo real. Entra con este enlace para unirte: ${shareUrl} o usa el código: ${inviteCode}`
-    );
+    const text = encodeURIComponent(invitationMessage);
     window.open(`https://api.whatsapp.com/send?text=${text}`, '_blank');
   };
 
+  // 3. Direct Email Client (Mailto)
+  const handleShareEmailClient = () => {
+    const subject = encodeURIComponent('Invitación para compartir nuestras Finanzas Familiares');
+    const body = encodeURIComponent(
+      `¡Hola!\n\nTe invito a que llevemos nuestras finanzas y gastos familiares juntos en tiempo real.\n\nPuedes entrar directamente desde este enlace:\n${shareUrl}\n\nO si te pide código al iniciar sesión, usa: ${inviteCode}\n\n¡Un abrazo!`
+    );
+    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+  };
+
+  // 4. Copy URL
+  const handleCopyLink = async () => {
+    const ok = await copyToClipboard(shareUrl);
+    if (ok) {
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
+    }
+  };
+
+  // 5. Copy Code
+  const handleCopyCode = async () => {
+    const ok = await copyToClipboard(inviteCode);
+    if (ok) {
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2500);
+    }
+  };
+
+  // 6. Copy Full Message
+  const handleCopyFullMessage = async () => {
+    const ok = await copyToClipboard(invitationMessage);
+    if (ok) {
+      setCopiedFullMessage(true);
+      setTimeout(() => setCopiedFullMessage(false), 2500);
+    }
+  };
+
+  // 7. Add Wife's Email to pending invites
   const handleSendEmailInvite = async (e) => {
     e.preventDefault();
     if (!emailToInvite.trim() || !emailToInvite.includes('@')) {
@@ -61,9 +153,11 @@ export default function InviteModal({
     }
     setIsSendingEmail(true);
     try {
-      await onInviteEmail(emailToInvite.trim().toLowerCase());
+      if (onInviteEmail) {
+        await onInviteEmail(emailToInvite.trim().toLowerCase());
+      }
       setEmailToInvite('');
-      alert(`¡Invitación guardada para ${emailToInvite}! Cuando inicie sesión con su cuenta de Google, se unirá automáticamente.`);
+      alert(`¡Invitación guardada para ${emailToInvite}! En cuanto tu pareja inicie sesión con su cuenta de Google, se unirá automáticamente.`);
     } catch (err) {
       console.error(err);
       alert('Error guardando la invitación por correo');
@@ -72,12 +166,15 @@ export default function InviteModal({
     }
   };
 
+  // 8. Join existing family with code
   const handleJoinExisting = async (e) => {
     e.preventDefault();
     if (!inputJoinCode.trim()) return;
     setIsJoining(true);
     try {
-      await onJoinWithCode(inputJoinCode.trim());
+      if (onJoinWithCode) {
+        await onJoinWithCode(inputJoinCode.trim());
+      }
       onClose();
     } catch (err) {
       alert(err.message || 'Código de invitación no válido o familia no encontrada');
@@ -100,7 +197,7 @@ export default function InviteModal({
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-800">Invitar a tu Pareja</h2>
-              <p className="text-xs text-slate-400">Espacio compartido: {family.name || 'Familia'}</p>
+              <p className="text-xs text-slate-400">Espacio: {activeFamily.name || 'Familia'}</p>
             </div>
           </div>
           <button
@@ -112,7 +209,7 @@ export default function InviteModal({
         </div>
 
         {/* Body Content */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1 text-left">
+        <div className="p-6 overflow-y-auto space-y-5 flex-1 text-left">
           {/* Explanation Box */}
           <div className="bg-gradient-to-r from-indigo-50/80 to-purple-50/80 p-4 rounded-2xl border border-indigo-100 flex items-start space-x-3">
             <ShieldCheck className="w-5 h-5 text-indigo-600 mt-0.5 shrink-0" />
@@ -121,15 +218,56 @@ export default function InviteModal({
                 Sincronización Total en Pareja
               </p>
               <p className="text-indigo-800/80 leading-relaxed">
-                Al invitar a tu esposa, ambos podrán registrar, editar y ver los mismos ingresos, gastos y gráficas en vivo desde cualquier teléfono o dispositivo.
+                Al invitar a tu esposa, ambos verán, registrarán y editarán en vivo los mismos gastos, ingresos y gráficas desde el teléfono o PC.
               </p>
             </div>
           </div>
 
-          {/* Option 1: Direct Link & WhatsApp */}
+          {/* MAIN PROMINENT BUTTON: SEND FROM PHONE (Web Share API) */}
           <div className="space-y-2">
             <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
-              1. Enlace de Invitación Directa
+              Opción Rápida: Enviar desde tu Teléfono
+            </label>
+            <button
+              type="button"
+              onClick={handleNativeShare}
+              className="w-full py-3.5 px-4 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white rounded-2xl font-bold text-sm shadow-md shadow-indigo-200 transition flex items-center justify-center space-x-2.5 active:scale-98"
+            >
+              <Smartphone className="w-5 h-5" />
+              <span>Enviar por WhatsApp, Email u otras Apps</span>
+            </button>
+            {shareSuccessFeedback && (
+              <p className="text-xs text-center text-emerald-600 font-bold animate-fade-in">
+                {shareSuccessFeedback}
+              </p>
+            )}
+          </div>
+
+          {/* Quick Direct Buttons (WhatsApp & Email fallback) */}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleShareWhatsApp}
+              className="py-2.5 px-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 transition active:scale-98"
+            >
+              <MessageCircle className="w-4 h-4 text-emerald-600" />
+              <span>Abrir WhatsApp</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleShareEmailClient}
+              className="py-2.5 px-3 bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-700 rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 transition active:scale-98"
+            >
+              <Mail className="w-4 h-4 text-sky-600" />
+              <span>Enviar por Email</span>
+            </button>
+          </div>
+
+          {/* Option: Copy Direct Link */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
+              Copiar Enlace Directo
             </label>
             <div className="flex gap-2">
               <input
@@ -141,33 +279,40 @@ export default function InviteModal({
               <button
                 type="button"
                 onClick={handleCopyLink}
-                className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center space-x-1 transition ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center space-x-1 transition active:scale-95 ${
                   copiedLink
                     ? 'bg-emerald-600 text-white'
                     : 'bg-indigo-600 text-white hover:bg-indigo-700'
                 }`}
               >
                 {copiedLink ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                <span>{copiedLink ? 'Copiado' : 'Copiar'}</span>
+                <span>{copiedLink ? '¡Copiado!' : 'Copiar'}</span>
               </button>
             </div>
+          </div>
 
+          {/* Option: Copy Full Ready-To-Paste Message */}
+          <div>
             <button
               type="button"
-              onClick={handleShareWhatsApp}
-              className="w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 shadow-xs transition"
+              onClick={handleCopyFullMessage}
+              className={`w-full py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center space-x-1.5 transition ${
+                copiedFullMessage
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                  : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+              }`}
             >
-              <Share2 className="w-4 h-4" />
-              <span>Enviar por WhatsApp a mi esposa</span>
+              {copiedFullMessage ? <Check className="w-4 h-4 text-emerald-600" /> : <FileText className="w-4 h-4 text-slate-500" />}
+              <span>{copiedFullMessage ? '¡Mensaje completo copiado!' : 'Copiar mensaje con texto explicativo listo para pegar'}</span>
             </button>
           </div>
 
-          {/* Option 2: Short Code */}
-          <div className="space-y-2">
+          {/* Option: 6-Digit Code */}
+          <div className="space-y-1.5">
             <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
-              2. Código Familiar
+              Código de Familia
             </label>
-            <div className="flex items-center justify-between p-3.5 bg-slate-50 border border-slate-200 rounded-2xl">
+            <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-2xl">
               <div>
                 <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
                   Código de 6 Caracteres
@@ -179,7 +324,7 @@ export default function InviteModal({
               <button
                 type="button"
                 onClick={handleCopyCode}
-                className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition ${
+                className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition active:scale-95 ${
                   copiedCode
                     ? 'bg-emerald-600 text-white'
                     : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
@@ -191,10 +336,10 @@ export default function InviteModal({
             </div>
           </div>
 
-          {/* Option 3: Invite by Email */}
-          <div className="space-y-2">
+          {/* Option: Invite by Email (Auto-sync) */}
+          <div className="space-y-1.5 pt-1">
             <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
-              3. Invitar colocando su Correo
+              O Invitar escribiendo su Correo
             </label>
             <form onSubmit={handleSendEmailInvite} className="flex gap-2">
               <div className="relative flex-1">
@@ -217,7 +362,7 @@ export default function InviteModal({
               </button>
             </form>
             <p className="text-[11px] text-slate-400">
-              En cuanto tu esposa inicie sesión con Google usando ese correo, se unirá automáticamente a esta familia.
+              En cuanto tu esposa inicie sesión con Google usando ese correo, se vinculará de forma automática.
             </p>
           </div>
 
@@ -250,18 +395,18 @@ export default function InviteModal({
                     </div>
                   </div>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200">
-                    Activo
+                    Conectado
                   </span>
                 </div>
               ))}
 
               {/* Pending emails */}
-              {family.invitedEmails && family.invitedEmails.length > 0 && (
+              {activeFamily.invitedEmails && activeFamily.invitedEmails.length > 0 && (
                 <div className="space-y-1 pt-1">
                   <span className="text-[11px] font-semibold text-slate-400 block">
                     Invitaciones pendientes:
                   </span>
-                  {family.invitedEmails.map((email) => (
+                  {activeFamily.invitedEmails.map((email) => (
                     <div
                       key={email}
                       className="flex items-center justify-between p-2.5 rounded-xl border border-amber-200/60 bg-amber-50/50 text-xs"
@@ -292,7 +437,7 @@ export default function InviteModal({
             </div>
           </div>
 
-          {/* Join Another Family Accordion (Fallback if needed) */}
+          {/* Join Another Family Accordion */}
           <div className="pt-2 border-t border-slate-100">
             <button
               type="button"
