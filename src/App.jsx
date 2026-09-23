@@ -51,6 +51,8 @@ import {
 import TransactionModal from './components/TransactionModal';
 import InviteModal from './components/InviteModal';
 import ReportsView from './components/ReportsView';
+import SharedNoteCard from './components/SharedNoteCard';
+import BcvConverter from './components/BcvConverter';
 
 export default function App() {
   // Auth & Profile
@@ -82,6 +84,12 @@ export default function App() {
   const [editingTransaction, setEditingTransaction] = useState(null);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
 
+  // Shared Note State
+  const [sharedNote, setSharedNote] = useState('');
+  const [sharedNoteAuthorName, setSharedNoteAuthorName] = useState('');
+  const [sharedNoteAuthorColor, setSharedNoteAuthorColor] = useState('#EC4899');
+  const [sharedNoteUpdatedAt, setSharedNoteUpdatedAt] = useState(null);
+
   // Subscriptions & Helpers
   const subscribeToFamily = (familyId) => {
     return onSnapshot(doc(db, 'families', familyId), (docSnap) => {
@@ -98,6 +106,12 @@ export default function App() {
           }));
           setFamilyMembers(membersList);
         }
+
+        // Extract shared note
+        setSharedNote(data.sharedNote || '');
+        setSharedNoteAuthorName(data.sharedNoteAuthorName || '');
+        setSharedNoteAuthorColor(data.sharedNoteAuthorColor || '#EC4899');
+        setSharedNoteUpdatedAt(data.sharedNoteUpdatedAt ? (data.sharedNoteUpdatedAt.toDate ? data.sharedNoteUpdatedAt.toDate().toISOString() : data.sharedNoteUpdatedAt) : null);
       }
     });
   };
@@ -334,6 +348,27 @@ export default function App() {
   const handleDeleteTransaction = async (txId) => {
     if (!family || !txId) return;
     await deleteDoc(doc(db, 'families', family.id, 'transactions', txId));
+  };
+
+  // Shared Note Handlers
+  const handleSaveNote = async (text) => {
+    if (!family) return;
+    await updateDoc(doc(db, 'families', family.id), {
+      sharedNote: text,
+      sharedNoteAuthorName: profile?.name || user?.displayName || 'Usuario',
+      sharedNoteAuthorColor: profile?.color || '#EC4899',
+      sharedNoteUpdatedAt: serverTimestamp()
+    });
+  };
+
+  const handleDeleteNote = async () => {
+    if (!family) return;
+    await updateDoc(doc(db, 'families', family.id), {
+      sharedNote: '',
+      sharedNoteAuthorName: '',
+      sharedNoteAuthorColor: '',
+      sharedNoteUpdatedAt: serverTimestamp()
+    });
   };
 
   // Invite Modal Handlers
@@ -792,6 +827,20 @@ export default function App() {
                 <span>Invitar</span>
               </button>
             </div>
+
+            {/* Shared Note Card - Nota para la pareja */}
+            <SharedNoteCard
+              note={sharedNote}
+              noteAuthorName={sharedNoteAuthorName}
+              noteAuthorColor={sharedNoteAuthorColor}
+              noteUpdatedAt={sharedNoteUpdatedAt}
+              currentUser={user}
+              onSaveNote={handleSaveNote}
+              onDeleteNote={handleDeleteNote}
+            />
+
+            {/* BCV Converter */}
+            <BcvConverter />
 
             {/* Quick Action Buttons */}
             <div className="grid grid-cols-2 gap-3">
