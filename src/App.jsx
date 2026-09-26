@@ -398,14 +398,41 @@ export default function App() {
   // Invite Modal Handlers
   const handleInviteEmail = async (email) => {
     if (!family || !profile || !user) return;
-    const emailLower = email.toLowerCase();
+    const emailLower = email.toLowerCase().trim();
 
-    // 1. Add email to invitedEmails in family doc (for auto-join on login)
+    // 1. Add email to invitedEmails in family doc (for auto-join on login or URL join)
     await updateDoc(doc(db, 'families', family.id), {
       invitedEmails: arrayUnion(emailLower)
     });
 
-    // 2. Create an in-app invitation notification in /invitations
+    // 2. Check if this email already has a registered user account (already in the app)
+    // If so, auto-join them directly without waiting for them to accept
+    try {
+      const usersQ = query(collection(db, 'users'), where('email', '==', emailLower));
+      const usersSnap = await getDocs(usersQ);
+      if (!usersSnap.empty) {
+        // User already exists — add them directly to the family
+        const targetUser = usersSnap.docs[0].data();
+        const targetUid = usersSnap.docs[0].id;
+        await updateDoc(doc(db, 'families', family.id), {
+          members: arrayUnion(targetUid),
+          [`memberProfiles.${targetUid}`]: {
+            name: targetUser.name || email,
+            color: targetUser.color || '#EC4899',
+            avatar: targetUser.avatar || '',
+            email: emailLower
+          },
+        });
+        // NOTE: We don't update users/{targetUid}.familyId here because security rules
+        // only let each user write their own doc. Her familyId updates when she
+        // accepts the invitation banner below.
+      }
+    } catch (lookupErr) {
+      // If lookup fails (e.g. no composite index yet), fall through to invitation flow
+      console.warn('User lookup failed, falling back to invitation:', lookupErr);
+    }
+
+    // 3. User not found yet — create an in-app invitation so they see it when they log in
     await addDoc(collection(db, 'invitations'), {
       familyId: family.id,
       familyName: family.name || 'Finanzas Familiares',
@@ -524,21 +551,23 @@ export default function App() {
   // Accept an in-app invitation
   const handleAcceptInvitation = async (inviteId, targetFamilyId) => {
     if (!user || !profile) return;
+    const emailLower = (user.email || '').toLowerCase().trim();
     try {
-      // Add user to the family
+      // Add user to the family (isInvitedByEmail rule will allow this)
       await updateDoc(doc(db, 'families', targetFamilyId), {
         members: arrayUnion(user.uid),
         [`memberProfiles.${user.uid}`]: {
-          name: profile.name,
-          color: profile.color,
+          name: profile.name || user.displayName || 'Usuario',
+          color: profile.color || '#EC4899',
           avatar: profile.avatar || user.photoURL || '',
-          email: user.email
+          email: emailLower
         },
-        ...(user.email ? { invitedEmails: arrayRemove(user.email.toLowerCase()) } : {})
+        // Remove from invited list once they've joined
+        ...(emailLower ? { invitedEmails: arrayRemove(emailLower) } : {})
       });
-      // Update user profile with familyId
+      // Update user profile with the new familyId
       await updateDoc(doc(db, 'users', user.uid), { familyId: targetFamilyId });
-      // Mark invitation as accepted
+      // Mark invitation as accepted so it disappears from the listener
       await updateDoc(doc(db, 'invitations', inviteId), { status: 'accepted' });
       setProfile((prev) => ({ ...prev, familyId: targetFamilyId }));
       setPendingInvitation(null);
@@ -546,7 +575,13 @@ export default function App() {
       subscribeToTransactions(targetFamilyId);
     } catch (err) {
       console.error('Error accepting invitation:', err);
-      alert('No se pudo aceptar la invitación. Intenta con el código o enlace directo.');
+      // If permission denied, it means email in token doesn't match invitedEmails.
+      // Try joining with code flow as fallback
+      if (err.code === 'permission-denied') {
+        alert('⚠️ Hubo un problema de permisos. Pídele a tu pareja que te invite de nuevo o usa el código directamente.');
+      } else {
+        alert('No se pudo aceptar la invitación. Intenta con el código o enlace directo.');
+      }
     }
   };
 
