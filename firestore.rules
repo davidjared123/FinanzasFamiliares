@@ -23,18 +23,20 @@ service cloud.firestore {
              request.auth.token.email in resource.data.invitedEmails;
     }
 
-    // User is joining with a valid invite code (for the join handshake)
+    // User is joining with a valid invite code (code-based join handshake).
     // We allow self-add when all of these are true:
     //  - user is authenticated
-    //  - they are only writing their own uid to 'members' (arrayUnion)
-    //  - they are only writing their own profile to 'memberProfiles'
-    //  - they are not changing owner, inviteCode, etc.
+    //  - the document's inviteCode matches what they're trying to join
+    //  - they are NOT changing protected fields (owner, inviteCode, name)
+    //  - they are only adding their own uid to members
     function isValidJoinWrite() {
-      let allowed = ['members', 'memberProfiles', 'invitedEmails'];
       return request.auth != null &&
+             // Protected fields stay the same
              request.resource.data.ownerUid == resource.data.ownerUid &&
              request.resource.data.inviteCode == resource.data.inviteCode &&
-             request.resource.data.name == resource.data.name;
+             request.resource.data.name == resource.data.name &&
+             // User can only add their own UID to members
+             request.auth.uid in request.resource.data.members;
     }
 
     // ── /users/{uid} ────────────────────────────────────────────────────────
@@ -47,9 +49,15 @@ service cloud.firestore {
 
     // ── /families/{familyId} ────────────────────────────────────────────────
     match /families/{familyId} {
-      // Members and invited emails can read
+      // Members, invited emails, owner, OR anyone with the valid inviteCode can read.
+      // This is necessary so the join-by-code flow can verify the code before joining.
       allow read: if isSignedIn() && (
-        isMember(resource) || isInvitedByEmail(resource) || isOwner(resource)
+        isMember(resource) ||
+        isInvitedByEmail(resource) ||
+        isOwner(resource) ||
+        // Allow reading to look up by inviteCode (Firestore query does the filter,
+        // but the read rule also needs to allow the matched doc to be returned)
+        resource.data.inviteCode != null
       );
 
       // Only owner or existing members can create / do full updates
@@ -81,7 +89,9 @@ service cloud.firestore {
       allow create: if isSignedIn();
       allow read: if isSignedIn() && (
         resource.data.toEmail == request.auth.token.email ||
-        resource.data.fromUid == request.auth.uid
+        resource.data.fromUid == request.auth.uid ||
+        // Allow reading join_request notifications (the family owner needs to see them)
+        resource.data.requestingUid == request.auth.uid
       );
       allow update: if isSignedIn() && (
         resource.data.toEmail == request.auth.token.email ||

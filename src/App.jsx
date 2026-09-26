@@ -427,63 +427,95 @@ export default function App() {
   };
 
   const handleJoinWithCode = async (code) => {
-    if (!user || !profile) return;
-    const q = query(collection(db, 'families'), where('inviteCode', '==', code.trim()));
-    const snap = await getDocs(q);
+    if (!user || !profile) throw new Error('Debes iniciar sesión primero');
 
+    const trimmedCode = code.trim().toUpperCase();
+
+    // Try to find the family by inviteCode field first
     let targetId = null;
-    if (!snap.empty) {
-      targetId = snap.docs[0].id;
-    } else {
-      const direct = await getDoc(doc(db, 'families', code.trim()));
-      if (direct.exists()) targetId = direct.id;
+    let targetData = null;
+
+    try {
+      const q = query(collection(db, 'families'), where('inviteCode', '==', trimmedCode));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        targetId = snap.docs[0].id;
+        targetData = snap.docs[0].data();
+      }
+    } catch (readErr) {
+      console.warn('Error buscando por inviteCode, intentando por ID directo:', readErr);
+    }
+
+    // Fallback: try treating the code as the document ID directly
+    if (!targetId) {
+      try {
+        const direct = await getDoc(doc(db, 'families', trimmedCode));
+        if (direct.exists()) {
+          targetId = direct.id;
+          targetData = direct.data();
+        }
+      } catch (directErr) {
+        console.warn('Error buscando por ID directo:', directErr);
+      }
     }
 
     if (!targetId) {
-      throw new Error('Código no encontrado o inválido');
+      throw new Error('Código no encontrado. Verifica que el código sea correcto y que tu pareja ya haya creado su cuenta.');
     }
 
-    // Step 1: Add the user's email to invitedEmails first so rules allow the join
-    // We do this via a separate write that the owner's rule allows on invitations
-    // Then do the actual member join update
+    // Check if already a member
+    if (targetData?.members && targetData.members.includes(user.uid)) {
+      // Already a member, just update local state
+      setProfile((prev) => ({ ...prev, familyId: targetId }));
+      await updateDoc(doc(db, 'users', user.uid), { familyId: targetId });
+      subscribeToFamily(targetId);
+      subscribeToTransactions(targetId);
+      return;
+    }
+
+    // Attempt to join: update the family document
     try {
       await updateDoc(doc(db, 'families', targetId), {
         members: arrayUnion(user.uid),
         [`memberProfiles.${user.uid}`]: {
-          name: profile.name,
-          color: profile.color,
+          name: profile.name || user.displayName || 'Usuario',
+          color: profile.color || '#6366F1',
           avatar: profile.avatar || user.photoURL || '',
-          email: user.email
+          email: user.email || ''
         }
       });
     } catch (permErr) {
-      // If permission denied, create a join-request invitation so the owner can see it
+      console.error('Error al unirse a la familia:', permErr);
+
       if (permErr.code === 'permission-denied') {
-        await addDoc(collection(db, 'invitations'), {
-          familyId: targetId,
-          familyName: 'Familia',
-          fromUid: user.uid,
-          fromName: profile.name || user.displayName || 'Usuario',
-          fromColor: profile.color || '#6366F1',
-          fromAvatar: profile.avatar || user.photoURL || '',
-          toEmail: '', // broadcast — owner will see it
-          requestingUid: user.uid,
-          requestingEmail: user.email || '',
-          status: 'join_request',
-          inviteCode: code.trim(),
-          createdAt: serverTimestamp()
-        });
+        // Fallback: create a join-request so the owner can accept manually
+        try {
+          await addDoc(collection(db, 'invitations'), {
+            familyId: targetId,
+            familyName: targetData?.name || 'Familia',
+            fromUid: user.uid,
+            fromName: profile.name || user.displayName || 'Usuario',
+            fromColor: profile.color || '#6366F1',
+            fromAvatar: profile.avatar || user.photoURL || '',
+            toEmail: '',
+            requestingUid: user.uid,
+            requestingEmail: user.email || '',
+            status: 'join_request',
+            inviteCode: trimmedCode,
+            createdAt: serverTimestamp()
+          });
+        } catch (inviteErr) {
+          console.error('Error creando solicitud de unión:', inviteErr);
+        }
         throw new Error(
-          'Tu solicitud fue enviada. El dueño de la familia debe aceptarte desde su app.'
+          '⚠️ Sin permiso directo. Se envió una solicitud a tu pareja para que te acepte. Pídele que revise la app.'
         );
       }
-      throw permErr;
+      throw new Error(`Error al unirse: ${permErr.message}`);
     }
 
-    await updateDoc(doc(db, 'users', user.uid), {
-      familyId: targetId
-    });
-
+    // Update the user's own profile with the new familyId
+    await updateDoc(doc(db, 'users', user.uid), { familyId: targetId });
     setProfile((prev) => ({ ...prev, familyId: targetId }));
     subscribeToFamily(targetId);
     subscribeToTransactions(targetId);
